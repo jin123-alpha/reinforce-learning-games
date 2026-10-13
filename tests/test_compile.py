@@ -90,8 +90,9 @@ def test_each_module_imports(c: _Case) -> None:
     modules = [
         "common.paths", "common.cli", "common.runner",
         "envs", "envs.base", "envs.game_env", "envs.normalize",
-        "games", "games.catcher", "games.dodger",
+        "games", "games.catcher", "games.dodger", "games.snake",
         "experts", "experts.base", "experts.catcher",
+        "experts.dodger", "experts.snake",
         "compare_child", "train", "play", "human_play", "compare",
     ]
 
@@ -139,7 +140,7 @@ def test_games_dir_importable_standalone(c: _Case) -> None:
 
     # 直接运行游戏文件（不进入互动循环）：靠 __main__ 守卫，
     # 我们用 -c 方式 import 它的模块来间接验证 sys.path 垫片没问题
-    for game in ("catcher", "dodger"):
+    for game in ("catcher", "dodger", "snake"):
         proc = subprocess.run(
             [sys.executable, "-c", f"import games.{game}.{game}"],
             capture_output=True, text=True, cwd=str(ROOT), env=env,

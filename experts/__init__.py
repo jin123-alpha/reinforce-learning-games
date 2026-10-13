@@ -6,7 +6,9 @@ experts/__init__.py
     experts/
     ├── __init__.py     ← 本文件（注册表 + 工厂函数）
     ├── base.py         ← BasePolicy / RandomPolicy 接口
-    └── catcher.py      ← ExpertCatcher
+    ├── catcher.py      ← ExpertCatcher（规则 + EDF 调度）
+    ├── dodger.py       ← ExpertDodger（滚动时域前瞻避碰）
+    └── snake.py        ← ExpertSnake（安全过滤 + 朝食物贪心 + 留退路）
 
 为什么是「一个游戏一个文件」而不是子目录
 ----------------------------------------
@@ -21,17 +23,23 @@ experts/__init__.py
     1. 写 experts/<game>.py，实现一个 BasePolicy 子类
     2. 在下面的 EXPERTS 里注册一行
 
-没有专家策略的游戏（比如现在的 dodger）不会报错，
-compare.py 会在对应窗口显示「该游戏暂无专家策略」占位。
+前提：该游戏的 `obs_spec()` 必须声明 `kind` 与还原系数 ——
+专家是纯 obs→action 的，尺度只能由游戏提供（见 envs/base.py）。
+
+没有专家策略的游戏不会报错，compare.py 会在对应窗口显示占位提示。
 """
 from __future__ import annotations
 
 from experts.base import BasePolicy, ObsSpecMismatch, RandomPolicy
 from experts.catcher import ExpertCatcher
+from experts.dodger import ExpertDodger
+from experts.snake import ExpertSnake
 
 # 游戏名 -> 专家策略类
 EXPERTS: dict[str, type] = {
     "catcher": ExpertCatcher,
+    "dodger": ExpertDodger,
+    "snake": ExpertSnake,
 }
 
 
@@ -58,6 +66,7 @@ def make_expert(game_name: str, action_space, spec: dict) -> BasePolicy:
 
 
 __all__ = [
-    "BasePolicy", "RandomPolicy", "ObsSpecMismatch", "ExpertCatcher",
+    "BasePolicy", "RandomPolicy", "ObsSpecMismatch",
+    "ExpertCatcher", "ExpertDodger", "ExpertSnake",
     "EXPERTS", "has_expert", "expert_games", "make_expert",
 ]

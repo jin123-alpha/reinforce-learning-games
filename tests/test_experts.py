@@ -27,7 +27,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from envs import make_env  # noqa: E402
-from experts import ExpertCatcher, RandomPolicy, has_expert, make_expert  # noqa: E402
+from experts import (  # noqa: E402
+    ExpertCatcher, ExpertDodger, ExpertSnake,
+    RandomPolicy, has_expert, make_expert,
+)
 from experts.base import ObsSpecMismatch  # noqa: E402
 
 
@@ -230,16 +233,247 @@ def test_rich_obs_required(c: _Case) -> None:
     env.close()
 
 
-def test_dodger_has_no_expert(c: _Case) -> None:
-    """没有专家的游戏要能被显式查询出来（compare.py 靠它显示占位）。"""
-    c.check("catcher 有专家", has_expert("catcher"))
-    c.check("dodger 暂无专家", not has_expert("dodger"))
+def test_expert_registry(c: _Case) -> None:
+    """所有内置游戏都该有专家；未实现的游戏要能被查询出来并明确报错。
 
+    注意：dodger 和 snake 现在**都**有专家了，所以降级路径改用
+    「完全不存在的游戏名」来验证 —— 否则这个测试会随着专家越写越多
+    而变成永远失败。
+    """
+    c.check("catcher 有专家", has_expert("catcher"))
+    c.check("dodger 有专家", has_expert("dodger"))
+    c.check("snake 有专家", has_expert("snake"))
+
+    # 未实现专家的游戏必须能被查询出来，且 make_expert 明确报错
+    c.check("不存在的游戏没有专家", not has_expert("no_such_game"))
+
+    env = make_env("dodger")
     try:
-        make_expert("dodger", make_env("dodger").action_space, {})
-        c.failed.append("dodger 没有专家，make_expert 本应报错")
+        make_expert("no_such_game", env.action_space, {})
+        c.failed.append("不存在的游戏，make_expert 本应报错")
     except ValueError:
         c.passed += 1
+    env.close()
+
+
+# ======================================================================
+# 躲避专家
+# ======================================================================
+def test_dodger_obs_spec_contract(c: _Case) -> None:
+    """dodger 的 obs_spec 必须自洽，且能被专家构造。"""
+    env = make_env("dodger")
+    game = env.unwrapped_game
+    spec = game.obs_spec()
+
+    c.eq("dodger obs_dim 与观测空间一致", spec["obs_dim"],
+         int(np.prod(env.observation_space.shape)))
+    c.eq("n_slots 与 n_visible 一致", spec["n_slots"], game.n_visible)
+    c.eq("dodger kind 正确", spec["kind"], "dodger")
+
+    expert = ExpertDodger(env.action_space, spec)
+    c.eq("躲避专家推导的维度正确", expert._expected_obs_dim, spec["obs_dim"])
+    env.close()
+
+    # 维度不符必须报错，而不是静默跑出低分
+    env2 = make_env("dodger")
+    bad = dict(env2.unwrapped_game.obs_spec())
+    bad["obs_dim"] = 999
+    try:
+        ExpertDodger(env2.action_space, bad)
+        c.failed.append("dodger obs_dim 不符本应报错")
+    except ObsSpecMismatch:
+        c.passed += 1
+    env2.close()
+
+    # kind 不对也要报错（拿 catcher 的 spec 去建躲避专家）
+    env3 = make_env("catcher")
+    try:
+        ExpertDodger(env3.action_space, env3.unwrapped_game.obs_spec())
+        c.failed.append("用 catcher 的 spec 建 ExpertDodger 本应报错")
+    except ObsSpecMismatch:
+        c.passed += 1
+    env3.close()
+
+
+def test_dodger_expert_beats_random(c: _Case) -> None:
+    """躲避专家必须显著强于随机。"""
+    def run(policy_factory, episodes=20):
+        env = make_env("dodger")
+        game = env.unwrapped_game
+        policy = policy_factory(env, game)
+        steps = []
+        for seed in range(7000, 7000 + episodes):
+            obs, _ = env.reset(seed=seed)
+            while True:
+                action, _ = policy.predict(obs, deterministic=True)
+                obs, _, term, trunc, info = env.step(int(action))
+                if term or trunc:
+                    steps.append(info["steps"])
+                    break
+        env.close()
+        return float(np.mean(steps))
+
+    rand = run(lambda env, game: RandomPolicy(env.action_space))
+    exp = run(lambda env, game: make_expert("dodger", env.action_space,
+                                            game.obs_spec()))
+
+    c.check("躲避专家强于随机", exp > rand * 1.2,
+            f"随机 {rand:.1f} vs 专家 {exp:.1f}")
+    # 实测专家约 350 步、随机约 200 步，给一个宽松下界防退化
+    c.check("躲避专家达到量级预期（>250）", exp > 250.0,
+            f"专家仅 {exp:.1f}")
+    print(f"      [参考] dodger 随机 {rand:.1f} / 专家 {exp:.1f}")
+
+
+def test_dodger_expert_never_walks_into_obstacle(c: _Case) -> None:
+    """只要存在安全动作，专家就绝不能主动撞上去。
+
+    这是躲避专家的**最低正确性标准**：它不该死于「明明有路可走」。
+    同时统计多少比例的死亡是"三个动作全不安全"（结构性死亡）。
+    """
+    env = make_env("dodger")
+    game = env.unwrapped_game
+    policy = ExpertDodger(env.action_space, game.obs_spec())
+
+    unavoidable = 0
+    avoidable_deaths = []
+    for seed in range(7000, 7000 + 15):
+        obs, _ = env.reset(seed=seed)
+        while True:
+            px, obst = policy._unpack(obs)
+            # 用与专家相同的"步末位置"判定，统计当前有几个安全动作
+            obst_next = policy._advance(obst)
+            safe = []
+            for a, dx in ((0, -game.player_speed), (1, 0.0),
+                          (2, game.player_speed)):
+                nx = float(np.clip(px + dx, 0.0,
+                                   game.WIDTH - game.PLAYER_W))
+                if not policy._collides(nx, obst_next):
+                    safe.append(a)
+
+            action, _ = policy.predict(obs, deterministic=True)
+            obs, _, term, trunc, info = env.step(int(action))
+            if term or trunc:
+                if term:
+                    if not safe:
+                        unavoidable += 1
+                    else:
+                        avoidable_deaths.append((seed, info["steps"], safe))
+                break
+    env.close()
+
+    c.check("躲避专家没有一次死于「有路可走」",
+            not avoidable_deaths,
+            f"{len(avoidable_deaths)} 次可避免死亡：{avoidable_deaths[:3]}")
+    print(f"      [参考] 15 回合中 {unavoidable} 次属结构性死亡（无路可走）")
+
+
+# ======================================================================
+# 贪吃蛇专家
+# ======================================================================
+def test_snake_obs_spec_contract(c: _Case) -> None:
+    """snake 的 obs_spec 必须自洽，且能被专家构造。"""
+    env = make_env("snake")
+    game = env.unwrapped_game
+    spec = game.obs_spec()
+
+    c.eq("snake obs_dim 与观测空间一致", spec["obs_dim"],
+         int(np.prod(env.observation_space.shape)))
+    c.eq("snake kind 正确", spec["kind"], "snake")
+    c.eq("网格尺寸与游戏一致", (spec["grid_w"], spec["grid_h"]),
+         (game.grid_w, game.grid_h))
+
+    expert = ExpertSnake(env.action_space, spec)
+    c.eq("贪吃蛇专家推导的维度正确", expert.obs_dim, spec["obs_dim"])
+    env.close()
+
+    # 维度不符必须报错
+    env2 = make_env("snake")
+    bad = dict(env2.unwrapped_game.obs_spec())
+    bad["obs_dim"] = 999
+    try:
+        ExpertSnake(env2.action_space, bad)
+        c.failed.append("snake obs_dim 不符本应报错")
+    except ObsSpecMismatch:
+        c.passed += 1
+    env2.close()
+
+    # kind 不对也要报错
+    env3 = make_env("dodger")
+    try:
+        ExpertSnake(env3.action_space, env3.unwrapped_game.obs_spec())
+        c.failed.append("用 dodger 的 spec 建 ExpertSnake 本应报错")
+    except ObsSpecMismatch:
+        c.passed += 1
+    env3.close()
+
+    # 绝对方向动作下应明确拒绝，而不是算错
+    env4 = make_env("snake", relative_actions=False)
+    try:
+        ExpertSnake(env4.action_space, env4.unwrapped_game.obs_spec())
+        c.failed.append("relative_actions=False 时 ExpertSnake 本应报错")
+    except ObsSpecMismatch:
+        c.passed += 1
+    env4.close()
+
+
+def test_snake_expert_beats_random(c: _Case) -> None:
+    """贪吃蛇专家必须显著强于随机。"""
+    def run(policy_factory, episodes=20):
+        env = make_env("snake")
+        game = env.unwrapped_game
+        policy = policy_factory(env, game)
+        eaten = []
+        for seed in range(7000, 7000 + episodes):
+            obs, _ = env.reset(seed=seed)
+            while True:
+                action, _ = policy.predict(obs, deterministic=True)
+                obs, _, term, trunc, info = env.step(int(action))
+                if term or trunc:
+                    eaten.append(info["eaten"])
+                    break
+        env.close()
+        return float(np.mean(eaten))
+
+    rand = run(lambda env, game: RandomPolicy(env.action_space))
+    exp = run(lambda env, game: make_expert("snake", env.action_space,
+                                            game.obs_spec()))
+
+    c.check("贪吃蛇专家远强于随机", exp > max(rand * 3.0, 5.0),
+            f"随机 {rand:.2f} vs 专家 {exp:.2f}")
+    # 实测专家约 24，给一个宽松下界防退化
+    c.check("贪吃蛇专家达到量级预期（>8）", exp > 8.0,
+            f"专家仅 {exp:.2f}")
+    print(f"      [参考] snake 随机 {rand:.2f} / 专家 {exp:.2f}")
+
+
+def test_snake_expert_never_dies_when_safe_move_exists(c: _Case) -> None:
+    """只要观测里存在安全方向，专家就不该撞上去。"""
+    env = make_env("snake")
+    game = env.unwrapped_game
+    policy = ExpertSnake(env.action_space, game.obs_spec())
+
+    avoidable = []
+    for seed in range(7000, 7000 + 10):
+        obs, _ = env.reset(seed=seed)
+        while True:
+            danger, _, _, _, _ = policy._unpack(obs)
+            has_safe = bool((danger < 0.5).any())
+
+            action, _ = policy.predict(obs, deterministic=True)
+            obs, _, term, trunc, info = env.step(int(action))
+            if term or trunc:
+                # 饿死 / 步数截断不算撞死
+                starved = (game.max_steps_without_food > 0
+                           and info["steps_since_food"]
+                           >= game.max_steps_without_food)
+                if term and has_safe and not starved:
+                    avoidable.append((seed, info["steps"]))
+                break
+    env.close()
+
+    c.check("贪吃蛇专家没有一次死于「有安全方向」",
+            not avoidable, f"{len(avoidable)} 次可避免死亡：{avoidable[:3]}")
 
 
 # ======================================================================
@@ -248,17 +482,25 @@ def main() -> int:
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
     c = _Case()
-    print("[1/5] 新旧专家等价性 ...")
+    print("[1/7] 新旧接球专家等价性 ...")
     test_equivalence(c)
-    print("[2/5] 不同游戏参数下的等价性 ...")
+    print("[2/7] 不同游戏参数下的等价性 ...")
     test_different_params(c)
-    print("[3/5] 专家 vs 随机 ...")
+    print("[3/7] 接球专家 vs 随机 ...")
     test_expert_beats_random(c)
-    print("[4/5] obs_spec 契约 ...")
+    print("[4/7] obs_spec 契约（catcher）...")
     test_obs_spec_contract(c)
     test_rich_obs_required(c)
-    print("[5/5] 无专家游戏的降级 ...")
-    test_dodger_has_no_expert(c)
+    print("[5/7] 躲避专家 ...")
+    test_dodger_obs_spec_contract(c)
+    test_dodger_expert_beats_random(c)
+    test_dodger_expert_never_walks_into_obstacle(c)
+    print("[6/7] 贪吃蛇专家 ...")
+    test_snake_obs_spec_contract(c)
+    test_snake_expert_beats_random(c)
+    test_snake_expert_never_dies_when_safe_move_exists(c)
+    print("[7/7] 专家注册表与降级 ...")
+    test_expert_registry(c)
 
     print(f"\n通过 {c.passed} 项", end="")
     if c.failed:

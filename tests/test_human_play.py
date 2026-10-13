@@ -69,7 +69,7 @@ def run_snippet(code: str, timeout: int = 60) -> tuple[int, str, str]:
 # ======================================================================
 def test_run_human_does_not_crash(c: _Case) -> None:
     """核心回归：run_human 能进入事件循环（不再 video system not initialized）。"""
-    for game in ("catcher", "dodger"):
+    for game in ("catcher", "dodger", "snake"):
         code = f"""
         import time, threading
         import pygame
@@ -139,6 +139,10 @@ def test_human_play_script_runs(c: _Case) -> None:
             proc.returncode == 0 and "catcher" in proc.stdout,
             (proc.stderr.strip().splitlines() or ["?"])[-1])
 
+    # 新游戏也要出现在列表里
+    c.check("--list-games 列出了 snake",
+            "snake" in proc.stdout, proc.stdout.strip())
+
     # 确认这条路径确实不需要 torch
     c.check("human_play --list-games 不需要 torch",
             "torch" not in proc.stderr.lower())
@@ -168,9 +172,12 @@ def test_display_caption_used(c: _Case) -> None:
     from games import make_game
     g1 = make_game("catcher", render_mode="human")
     g2 = make_game("dodger", render_mode="human")
+    g3 = make_game("snake", render_mode="human")
     assert g1.display_caption != g2.display_caption, "两个游戏标题不该相同"
+    assert g1.display_caption != g3.display_caption, "两个游戏标题不该相同"
     assert "Catcher" in g1.display_caption
     assert "Dodger" in g2.display_caption
+    assert "Snake" in g3.display_caption
     print("CAPTION_OK")
     """
     rc, out, err = run_snippet(code)

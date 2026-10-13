@@ -74,9 +74,12 @@ class NormalizeScore(gym.Wrapper):
 # ----------------------------------------------------------------------
 # catcher：max_misses=10 时，专家实测约 17~25 分，取 30 作为参考上限。
 # dodger ：回合上限 max_steps=1000，活满即满分。
+# snake  ：吃满整个网格需要吃掉 n_cells - initial_len 颗食物，
+#          所以 16×16 - 3 = 253 是理论满分（专家实测约 24）。
 REFERENCE_MAX_SCORE = {
     "catcher": 30.0,
     "dodger": 1000.0,
+    "snake": 253.0,
 }
 
 

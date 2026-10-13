@@ -23,7 +23,7 @@
                            │  games/* -> envs.base（单向依赖）
                            ▼
 ┌─────────────────────────────────────────────────────────┐
-│  游戏层   games/catcher/   games/dodger/                  │
+│  游戏层   games/catcher/  games/dodger/  games/snake/     │
 │          纯 pygame，可独立人类游玩，不依赖任何 RL 库         │
 └─────────────────────────────────────────────────────────┘
 
@@ -44,6 +44,9 @@ catcher/
 │   ├── dodger/
 │   │   ├── __init__.py           GAME = DodgerGame
 │   │   └── dodger.py             躲避游戏（生存型任务，结构完全不同）
+│   ├── snake/
+│   │   ├── __init__.py           GAME = SnakeGame
+│   │   └── snake.py              贪吃蛇（离散网格 + 会增长的身体）
 │   └── __init__.py               自动扫描子目录注册（无需手改）
 │
 ├── envs/                         ★ 环境层
@@ -55,6 +58,8 @@ catcher/
 ├── experts/                      ★ 专家策略（一个游戏一个 py 文件）
 │   ├── base.py                   BasePolicy / RandomPolicy 接口
 │   ├── catcher.py                ExpertCatcher（规则 + EDF 调度）
+│   ├── dodger.py                 ExpertDodger（滚动时域前瞻避碰）
+│   ├── snake.py                  ExpertSnake（安全过滤 + 朝食物贪心 + 留退路）
 │   └── __init__.py               注册表
 │
 ├── common/                       ★ 公共工具（纯标准库）
@@ -67,7 +72,10 @@ catcher/
 │   │   ├── game.json             游戏参数（唯一真相）
 │   │   ├── 1.json                DQN 算法超参（引用 game.json）
 │   │   └── 2.json                PPO 算法超参
-│   └── dodger/
+│   ├── dodger/
+│   │   ├── game.json
+│   │   └── 1.json
+│   └── snake/
 │       ├── game.json
 │       └── 1.json
 │
@@ -154,22 +162,31 @@ python train.py --game catcher --config 1.json
 | --- | --- | --- | --- | --- |
 | **catcher** 接球 | `Discrete(3)` | `Box(23,)` | 落点越靠挡板中心越高 | 限速挡板接住多颗下落小球 |
 | **dodger** 躲避 | `Discrete(3)` | `Box(13,)` | 存活步数 | 左右闪避从天而降的障碍物 |
+| **snake** 贪吃蛇 | `Discrete(4)` | `Box(11,)` | 吃到的食物个数 | 网格上吃食物，撞墙/撞自己结束 |
 
-两个游戏**结构故意做得不同**，用来证明框架的通用性：
+三个游戏**结构故意做得不同**，用来证明框架的通用性：
 
 - catcher：几何物理 + 连续状态 + 稠密奖励 + 多目标调度
 - dodger：动态数量的障碍物（观测要"只留最近 N 个，空位填哨兵值"）+ 生存型奖励
+- snake：**离散网格** + **四方向动作** + 状态里有"自己造成的历史"（蛇身随吃变长）
+
+snake 的动作是**相对转向**（0=直行 1=右转 2=左转 3=掉头）而不是绝对方向，
+理由是「右转」的语义与当前朝向无关，策略可以在不同朝向上复用同一套判断，
+样本效率比绝对方向高得多（绝对方向下模型还得额外学"不要反向"这条硬约束）。
 
 ### 人类游玩
 
 ```bash
 python -m games.catcher.catcher   # 直接玩接球（游戏文件可独立运行）
 python -m games.dodger.dodger     # 直接玩躲避
+python -m games.snake.snake       # 直接玩贪吃蛇
 # 或者统一走入口脚本（会读取 config/<game>/game.json 的参数）
 python human_play.py --game catcher
+python human_play.py --game snake
 ```
 
 按键：**← / →（或 A / D）**移动，**R** 重开，**P** 暂停，**Esc** 退出。
+贪吃蛇用**方向键 / WASD** 转向（相对当前朝向）。
 
 ---
 
@@ -294,11 +311,16 @@ python play.py --game catcher --episodes 5
 # ---- 三窗口对比：随机 | 加载权重 | 专家 ----
 python compare.py --game catcher --episodes 10
 python compare.py --game dodger  --episodes 10
+python compare.py --game snake   --episodes 10
 
 # ---- TensorBoard ----
 tensorboard --logdir logs/catcher          # 单游戏的所有 run
 tensorboard --logdir logs                  # 全部游戏
 ```
+
+> 想让躲避专家更强，可以调大前瞻深度：
+> `make_expert(...)` 后设 `expert.horizon = 8`（约 +45% 存活步数，
+> 但每回合从 0.45 s 涨到 ~36 s，适合离线跑分而不是看窗口）。
 
 ### 产物按 run 分开存放，重训不覆盖
 
@@ -402,20 +424,57 @@ python play.py  --game my_game
 > 如果游戏是**连续动作**，把 `action_space` 声明成 `spaces.Box(...)` 即可，
 > PPO 直接支持；`play.py` / `train.py` 无需改动。
 
-> 如果游戏是**连续动作**，把 `action_space` 声明成 `spaces.Box(...)` 即可，
-> PPO 直接支持；`play.py` / `train.py` 无需改动。
+**第 3 步（可选）：想给这个游戏配专家，就实现 `obs_spec()`。**
+
+训练/演示完全不需要它；只有写 `experts/my_game.py` 时才需要。
+它声明的是「怎么从 obs 还原物理量」，约定用 `_scale` 后缀表示
+`obs * scale = 物理量`：
+
+```python
+def obs_spec(self) -> dict:
+    return {
+        "kind": "my_game",          # 专家据此校验自己拿到的是对的 spec
+        "obs_dim": int(np.prod(self.observation_space.shape)),
+        "x_scale": float(self.WIDTH),   # obs[i] * x_scale = 像素
+        ...
+    }
+```
+
+然后在 `experts/__init__.py` 的 `EXPERTS` 里注册一行：
+
+```python
+from experts.my_game import ExpertMyGame
+EXPERTS = {"catcher": ExpertCatcher, ..., "my_game": ExpertMyGame}
+```
+
+写专家时的两条硬约束（都是 `tests/test_structure.py` 断言过的）：
+
+1. **只吃 obs**：构造函数签名必须是 `(action_space, spec)`，
+   代码里不能出现 `game.xxx` —— 否则它就不是策略而是神谕了。
+2. **`.predict(obs, deterministic=True)` 返回 `(action, state)`** ——
+   与 SB3 模型一致，这样 `play.py` / `compare.py` 能一视同仁地调用它。
+
+> 如果 `obs_spec()` 没实现，或维度/`kind` 对不上，专家构造时会
+> **明确报错**而不是静默算错 —— 后者表现为"得分莫名其妙很低"，
+> 排查成本极高。
 
 ---
 
 ## 六、专家策略（不训练的硬处理）
 
-`experts/catcher.py` 里实现了**接球游戏的规则专家**，接口与 SB3 模型完全一致：
+每个游戏都有自己的**规则专家**，接口与 SB3 模型完全一致：
 
 ```python
 from experts import make_expert
 policy = make_expert("catcher", env.action_space, game.obs_spec())
 action, _ = policy.predict(obs, deterministic=True)
 ```
+
+| 文件 | 专家 | 用了什么思路 |
+| --- | --- | --- |
+| `experts/catcher.py` | `ExpertCatcher` | EDF 调度 + 精确瞄准落点中心 |
+| `experts/dodger.py` | `ExpertDodger` | 滚动时域前瞻（receding-horizon search）|
+| `experts/snake.py` | `ExpertSnake` | 安全过滤 + 朝食物贪心 + 留退路 |
 
 ### 专家是**纯 `obs → action`** 的，不接触 game 对象
 
@@ -427,15 +486,22 @@ action, _ = policy.predict(obs, deterministic=True)
 | 风险 | 游戏改内部常量 → 专家**静默**算错落点 | 尺度由游戏 `obs_spec()` 声明，改常量不会算错 |
 | 性质 | 能读到观测里没有的状态（近似作弊） | 严格只吃观测，是**合法的对照基线** |
 
+这条约束是**可执行**的：`tests/test_structure.py` 用 AST 逐个专家检查
+源码里不存在 `game.xxx` 属性访问（文档字符串里提到不算）。
+
 因为签名与 SB3 一致，所以
 
 ```python
-RandomPolicy  /  ExpertCatcher  /  SB3 model
+RandomPolicy  /  ExpertCatcher  /  ExpertDodger  /  ExpertSnake  /  SB3 model
 ```
 
-三者在 `play.py` / `compare.py` 里是**同一种东西**（都只有 `.predict`），
+在 `play.py` / `compare.py` 里是**同一种东西**（都只有 `.predict`），
 调用方不需要任何 `if kind == ...` 分支 —— 这正是三窗口对比能写得
 很干净的原因。
+
+---
+
+### 6.1 接球专家（`ExpertCatcher`）
 
 **思路**
 
@@ -451,7 +517,7 @@ RandomPolicy  /  ExpertCatcher  /  SB3 model
 > 此时调用 `obs_spec()` 会**明确报错**，而不是让专家算出一个错的落点
 > 然后表现为"得分莫名其妙很低"。
 
-### 实测对比（catcher，3 球 / 板速 5）
+**实测对比（catcher，3 球 / 板速 5）**
 
 | 策略 | return | score | 接住/回合 | 平均每球 | 失误 |
 | --- | --- | --- | --- | --- | --- |
@@ -464,8 +530,119 @@ RandomPolicy  /  ExpertCatcher  /  SB3 model
 > 诊断 630 次接球：**73% 的偏差 ≤ 2.5px**（移动粒度的理论极限，得分≈0.93），
 > 剩下 22% 是"勉强够到"的边缘接球 —— 这是**速度受限下的结构性上限**。
 
+---
+
+### 6.2 躲避专家（`ExpertDodger`）
+
+躲避是**生存型**任务（每活一步 +1，撞到立刻结束），所以目标不是
+"收集什么"，而是**最大化存活步数**。
+
+**为什么不能只做一步贪心**
+
+先看实测：把「一步避碰 + 挑最空方向」的贪心拿去跑，平均活 ~230 步。
+而换成**滚动时域前瞻**（假设障碍物保持当前速度，向前推演若干步，
+选能活得最久的第一步动作），平均活 ~364 步 —— 差 **58%**。
+原因很直接：贪心只看眼前一步，会主动钻进"下一步就被封死"的位置；
+前瞻能提前几帧开始规划走位。
+
+**思路**
+
+| 步骤 | 做法 |
+| --- | --- |
+| ① 还原物理量 | obs 是归一化值，用 `obs_spec()` 声明的系数乘回去；空槽位剔除 |
+| ② 前向模型 | `step()` 里玩家先动、障碍物再落、然后才判碰撞 → 必须用**步末**位置判定 |
+| ③ 前瞻搜索 | 向前推演 H 步，每节点试 3 个动作，撞到就得到"活到第几步" |
+| ④ 剪枝 + 记忆化 | 见下 |
+| ⑤ 评估函数 | 到深度上限时用"到最近威胁的横向余量"打分，避免所有分支同分 |
+
+**④ 的三点优化（纯性能，决策结果完全不变）**
+
+| 手段 | 效果 |
+| --- | --- |
+| 落点相同的动作（贴墙时的"左移"与"不动"）只搜一次 | 减少分支 |
+| `(player_x, 障碍物指纹, depth)` 记忆化 | 不同动作序列常汇合到同一局面，重复子树直接砍掉 |
+| 指纹按 0.5px 量化 + 排序，y 用**相对玩家高度** | 让"顺序不同但内容相同"的局面也命中缓存 |
+
+实测 H=6 从 **3.1 s/回合 → 0.47 s/回合（约 6.7×）**，
+且均值完全相同（364.3）—— 所以这是纯优化，不是近似。
+
+**前瞻深度的取舍**
+
+| H | 平均存活 | 速度 |
+| --- | --- | --- |
+| 1（纯贪心）| ~230 | 最快 |
+| **6（默认）** | **~364** | **~0.45 s/回合** |
+| 8 | ~533 | ~36 s/回合 |
+
+H=8 更强但慢到不适合当基线，所以默认取 6；想要更高分可以传 `horizon=8`。
+
+**实测对比（dodger，max_steps=1000）**
+
+| 策略 | 平均存活步数 |
+| --- | --- |
+| 随机策略 | ~220 |
+| 纯一步贪心 | ~230 |
+| **专家策略（0 训练，H=6）** | **364.3** |
+| 专家策略（H=8） | 532.9 |
+
+> **一个诚实的说明**：这类任务存在**结构性上限**。
+> 统计 15 个回合一专家死亡的时刻，**13 次是三个动作全都已经不安全**
+> （障碍物把横向完全封死）—— 那不是策略的错，是随机生成的死局。
+> 所以这里的分数差距反映的是"能救的部分救了没有"，
+> 而不是"还能不能更高"。
+>
+> `tests/test_experts.py` 里有一条断言专门守住这一点：
+> **只要存在安全动作，专家就绝不能撞上去**（不允许"死于有路可走"）。
+
+---
+
+### 6.3 贪吃蛇专家（`ExpertSnake`）
+
+贪吃蛇与前两个都不同：它需要**多步规划**（绕过自己的身体去够食物），
+而且状态里有**自己造成的历史**（蛇身随吃变长）—— 走一条现在安全的路，
+可能把蛇盘进死角，几步之后自己把自己困死。
+
+**思路（先保命，再吃饭，最后留后路）**
+
+| 步骤 | 做法 |
+| --- | --- |
+| ① 安全过滤 | 观测直接给了三个相对方向的危险度，排除会撞的 |
+| ② 能吃到就吃 | 食物标记为 `eat_value`（+1.0）时直接选它 |
+| ③ 朝食物靠近 | 在安全动作里挑"让到食物距离变小"的（标记 +0.5）|
+| ④ 留退路 | 用"少转向"+"保持开阔"做二次裁决，权重随**蛇长占比**上升 |
+| ⑤ 兜底 | 三方向全危险时赌一把掉头 |
+
+**④ 是专家与"傻瓜贪心"的分水岭**：只做 ①②③ 的贪心会在蛇变长后
+绕着障碍打转、把自己盘死。少转向让蛇身自然展开成一条线，
+保持开阔等价于"别往角落里钻"，两者在蛇越长时越重要。
+
+**信息边界（为什么它合法、不是神谕）**
+
+观测里只有「三方向危险度 + 食物档位 + 食物偏移 + 蛇长」，
+**没有完整网格**。所以专家无法做真正的 BFS 到食物，只能基于这些分量
+做启发式 —— 这正是它能当**合法对照基线**的原因。
+
+**实测对比（snake，16×16 网格）**
+
+| 策略 | 平均吃到食物 |
+| --- | --- |
+| 随机策略 | 0.00（平均 3.6 步就撞死）|
+| **专家策略（0 训练）** | **24.05**（最好一局 54）|
+
+> 随机策略几乎吃不到任何东西（网格 16×16 上随机乱走 ≈ 立刻撞墙），
+> 所以这个任务的"随机下界"接近 0，专家的对比非常醒目。
+> 理论满分是 `16×16 − 3 = 253` 颗（把整个网格填满），
+> 那是导航规划的极限，启发式专家离它还很远。
+
+`tests/test_experts.py` 同样守着"不允许死于有安全方向"这条底线。
+
+---
+
 数字可用 `python compare.py --game catcher --episodes 10` 复现
 （三窗口跑同步种子，逐回合明细可直接横向对比）。
+换 `--game dodger` / `--game snake` 即可看另两个游戏的对比。
+注意 dodger 的专家窗口速度约为 0.45 s/回合（前瞻搜索的代价），
+snake 专家则很快（~10 ms/回合）。
 
 ---
 
@@ -532,17 +709,33 @@ python tests/test_experts.py       # 也可以单个跑
 | `test_compile` | 全部 .py 语法正确、每个模块可独立导入、无循环导入 |
 | `test_paths` | 路径解析规则（按游戏分目录、run 指针、权重回退、拒绝路径穿越）|
 | `test_cli` | KEY=VALUE 解析（**含对旧写法的兼容性**）、配置引用解析 |
-| `test_experts` | 专家**新旧实现等价性**（4000+ 步逐动作比对）+ 强于随机 |
+| `test_experts` | 接球专家**新旧实现等价性**（4000+ 步逐动作比对）+ 三个专家都强于随机 |
 | `test_human_play` | `run_human` 不崩溃；`init_display` 的**调用顺序**（AST 断言）|
 | `test_dependencies` | 依赖分层：common 纯标准库、游戏层不含 torch、human_play 不需 RL |
 | `test_packaging` | extras 分组：递进关系、默认依赖是最小集、**真实 pip dry-run 解析** |
 | `test_decoupling` | 架构约束：games / human_play 不引入 RL 库（含源码扫描防绕过）|
 | `test_structure` | 目录结构、games 子目录形式、config 布局、旧文件已清理 |
 
-> **`test_experts` 的等价性验证值得一提**：把专家从"读 game 对象"
+三个游戏的专家各有专门的断言：
+
+| 断言 | 意义 |
+| --- | --- |
+| `test_equivalence` | 接球专家的行为等价性（重构没改坏东西）|
+| `test_expert_beats_random` | catcher 专家 > 随机的 3 倍 |
+| `test_dodger_expert_beats_random` | dodger 专家 > 250 步 |
+| `test_dodger_expert_never_walks_into_obstacle` | **不允许死于"有路可走"** |
+| `test_snake_expert_beats_random` | snake 专家 > 8 颗食物 |
+| `test_snake_expert_never_dies_when_safe_move_exists` | **不允许死于"有安全方向"** |
+| 各 `*_obs_spec_contract` | obs_spec 自洽；维度/kind 不符时**明确报错**而不是静默低分 |
+
+> **`test_experts` 的等价性验证值得一提**：把接球专家从"读 game 对象"
 > 改成"纯 obs"是个行为等价的重构，但"等价"不能靠肉眼保证。
 > 测试里内联了一份**重构前的实现**，让新旧两版在 4000+ 步真实轨迹上
 > 逐动作比对，全部一致 —— 这样重构才敢说没改坏东西。
+>
+> **"不允许死于有路可走"是最低正确性标准**：躲避和贪吃蛇的专家
+> 都可能因为启发式写错而主动撞上去，那种错误在平均分上只表现为
+> "分数偏低一点"，很难发现。单独的断言能把它变成硬失败。
 >
 > **`test_packaging` 会真跑 pip**：它建一个临时 venv，对
 > `.[1]` / `.[2]` / `.[3]` 各跑一次 `pip install --dry-run --report`，

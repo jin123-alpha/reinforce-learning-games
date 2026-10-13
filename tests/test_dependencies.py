@@ -77,9 +77,12 @@ RULES: dict[str, tuple[set[str], str]] = {
     "games":         ({"numpy", "gymnasium"}, "游戏包"),
     "games.catcher": ({"numpy", "gymnasium"}, "接球游戏"),
     "games.dodger":  ({"numpy", "gymnasium"}, "躲避游戏"),
+    "games.snake":   ({"numpy", "gymnasium"}, "贪吃蛇游戏"),
 
     "experts":         ({"numpy"}, "专家包"),
     "experts.catcher": ({"numpy"}, "接球专家"),
+    "experts.dodger":  ({"numpy"}, "躲避专家"),
+    "experts.snake":   ({"numpy"}, "贪吃蛇专家"),
 
     "human_play": ({"numpy", "gymnasium"}, "人类游玩：绝不许碰 RL 库"),
     "play":       ({"numpy", "gymnasium"}, "观看"),
@@ -149,9 +152,10 @@ def test_common_is_stdlib(c: _Case) -> None:
 
 def test_no_heavy_in_game_layers(c: _Case) -> None:
     """游戏 / 环境 / 专家三层都不许出现 torch 系列。"""
-    for mod in ("games", "games.catcher", "games.dodger",
+    for mod in ("games", "games.catcher", "games.dodger", "games.snake",
                 "envs", "envs.base", "envs.game_env", "envs.normalize",
-                "experts", "experts.catcher", "common.paths", "common.cli"):
+                "experts", "experts.catcher", "experts.dodger",
+                "experts.snake", "common.paths", "common.cli"):
         deps, err = probe(mod)
         if deps is None:
             c.check(f"{mod} 可导入", False, err)

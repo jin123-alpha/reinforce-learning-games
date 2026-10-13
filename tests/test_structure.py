@@ -72,12 +72,15 @@ def test_games_are_subdirs(c: _Case) -> None:
     c.check("games/ 下至少有一个游戏子目录", len(subdirs) >= 2, f"实际 {subdirs}")
     c.check("games/catcher/ 是目录", (games_dir / "catcher").is_dir())
     c.check("games/dodger/ 是目录", (games_dir / "dodger").is_dir())
+    c.check("games/snake/ 是目录", (games_dir / "snake").is_dir())
 
     # 旧的扁平文件不该还在
     c.check("games/catcher.py 已移入子目录",
             not (games_dir / "catcher.py").exists())
     c.check("games/dodger.py 已移入子目录",
             not (games_dir / "dodger.py").exists())
+    c.check("games/snake.py 已移入子目录",
+            not (games_dir / "snake.py").exists())
     c.check("games/base.py 已上交 envs",
             not (games_dir / "base.py").exists())
 
@@ -96,11 +99,18 @@ def test_experts_are_files(c: _Case) -> None:
     experts = ROOT / "experts"
     c.exists("experts/base.py（接口）", experts / "base.py")
     c.exists("experts/catcher.py（接球专家）", experts / "catcher.py")
+    c.exists("experts/dodger.py（躲避专家）", experts / "dodger.py")
+    c.exists("experts/snake.py（贪吃蛇专家）", experts / "snake.py")
 
     subdirs = [d.name for d in experts.iterdir()
                if d.is_dir() and not d.name.startswith("_")]
     c.check("experts/ 下没有游戏子目录（应该是扁平 py 文件）",
             not subdirs, f"发现子目录 {subdirs}")
+
+    # 每个游戏都该有对应的专家文件（有游戏没专家时这里会立刻发现）
+    for game in paths.available_games():
+        c.exists(f"experts/{game}.py 存在（每个游戏一个专家文件）",
+                 experts / f"{game}.py")
 
 
 def test_config_layout(c: _Case) -> None:
@@ -140,28 +150,40 @@ def test_envs_owns_contract(c: _Case) -> None:
 
 
 def test_experts_are_pure_obs(c: _Case) -> None:
-    """专家实现里不应出现对 game 对象的访问。"""
-    src = ROOT / "experts" / "catcher.py"
-    text = src.read_text(encoding="utf-8")
+    """每个专家实现里都不应出现对 game 对象的访问。
 
-    # 构造函数签名必须是 (action_space, spec)，不是 (game)
-    c.check("ExpertCatcher 构造参数是 (action_space, spec)",
-            "def __init__(self, action_space, spec" in text)
-
-    # 不该出现 game. 属性访问。
-    # 用 ast 解析而不是文本匹配：文档字符串里解释「旧版读 game.WIDTH」
-    # 是正常的，只有真正的属性访问节点才算违规。
+    对**所有** experts/<game>.py 逐个检查，而不是只看 catcher：
+    新增专家时最容易犯的错就是图方便去读游戏内部常量。
+    """
     import ast
 
-    tree = ast.parse(text)
-    offenders = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            if node.value.id == "game":
-                offenders.append(f"第 {node.lineno} 行: game.{node.attr}")
+    expected_sig = {
+        "catcher.py": "ExpertCatcher",
+        "dodger.py": "ExpertDodger",
+        "snake.py": "ExpertSnake",
+    }
 
-    c.check("专家代码里没有 game.xxx 属性访问",
-            not offenders, f"发现 {offenders[:3]}")
+    for fname, cls in expected_sig.items():
+        src = ROOT / "experts" / fname
+        text = src.read_text(encoding="utf-8")
+
+        # 构造函数签名必须是 (action_space, spec)，不是 (game)
+        c.check(f"{cls} 构造参数是 (action_space, spec)",
+                "def __init__(self, action_space, spec" in text,
+                f"见 experts/{fname}")
+
+        # 不该出现 game. 属性访问。
+        # 用 ast 解析而不是文本匹配：文档字符串里解释「旧版读 game.WIDTH」
+        # 是正常的，只有真正的属性访问节点才算违规。
+        tree = ast.parse(text)
+        offenders = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                if node.value.id == "game":
+                    offenders.append(f"第 {node.lineno} 行: game.{node.attr}")
+
+        c.check(f"{cls} 代码里没有 game.xxx 属性访问",
+                not offenders, f"发现 {offenders[:3]}")
 
 
 # ======================================================================

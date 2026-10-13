@@ -53,16 +53,22 @@ class DodgerGame(BaseGame):
         max_steps: int = 1000,
         player_speed: float | None = None,
         spawn_every: float | None = None,
+        n_visible: int | None = None,
     ) -> None:
         assert render_mode in self.render_modes or render_mode is None
         self.render_mode = render_mode
         self.max_steps = int(max_steps)
         self.player_speed = float(player_speed if player_speed is not None else self.PLAYER_SPEED)
         self.spawn_every = float(spawn_every if spawn_every is not None else self.SPAWN_EVERY)
+        # 观测里保留几个障碍物槽位。做成参数是为了让专家能在「看得更远」
+        # 的配置下被验证；默认值必须与旧版一致（4），否则观测维度变化会
+        # 让已训练的权重失效（load 时报维度不匹配）。
+        self.n_visible = int(n_visible if n_visible is not None else self.N_VISIBLE)
+        assert self.n_visible >= 1
 
         self.action_space = spaces.Discrete(3)   # 0=左 1=不动 2=右
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(1 + 3 * self.N_VISIBLE,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(1 + 3 * self.n_visible,), dtype=np.float32
         )
 
         self.window = None
@@ -136,11 +142,11 @@ class DodgerGame(BaseGame):
 
     # ================= 观测 =================
     def _get_obs(self) -> np.ndarray:
-        obs = np.full(1 + 3 * self.N_VISIBLE, self.EMPTY, dtype=np.float32)
+        obs = np.full(1 + 3 * self.n_visible, self.EMPTY, dtype=np.float32)
         obs[0] = self.player_x / self.WIDTH
         if len(self.obst):
             # 只保留最靠近玩家（y 最大）的 N 个
-            order = np.argsort(-self.obst[:, 1])[: self.N_VISIBLE]
+            order = np.argsort(-self.obst[:, 1])[: self.n_visible]
             for k, i in enumerate(order):
                 o = 1 + 3 * k
                 obs[o + 0] = self.obst[i, 0] / self.WIDTH
@@ -154,6 +160,49 @@ class DodgerGame(BaseGame):
             "steps": self.steps,
             "dodged": self.dodged,
             "obstacles": len(self.obst),
+        }
+
+    # ================= 观测说明（给专家策略用） =================
+    def obs_spec(self) -> dict:
+        """声明观测分量的物理尺度，让纯 obs 专家能还原真实物理量。
+
+        观测布局（1 维玩家 + n_visible 个障碍物 × 3 维）：
+
+            obs[0]           玩家左上角 x  / WIDTH
+            第 k 个槽位从 1 + 3*k 开始（k = 0 是**最靠近玩家**的那个）：
+                +0  障碍物左上角 x  * WIDTH
+                +1  障碍物左上角 y  * HEIGHT
+                +2  下落速度 vy      * OBST_VY_RANGE[1]
+            空槽位整块等于 EMPTY（-1.0）
+
+        与 catcher 的 obs_spec 一样，这里给的全部是
+        「obs * scale = 物理量」的系数，专家据此还原，不硬编码常量。
+
+        注意槽位顺序（按 y 从大到小）本身就是重要信息：
+        专家需要知道「哪个障碍物最危险」，而观测里只有这 n_visible 个，
+        看不到更远的 —— 所以专家是**合法的**对照基线，不是神谕。
+        """
+        return {
+            "kind": "dodger",
+            "n_slots": self.n_visible,
+            "per_obstacle": 3,
+            "obs_dim": 1 + 3 * self.n_visible,
+            # 玩家
+            "player_x_scale": float(self.WIDTH),
+            "player_speed_scale": float(self.player_speed),
+            # 障碍物
+            "x_scale": float(self.WIDTH),
+            "y_scale": float(self.HEIGHT),
+            "vy_scale": float(self.OBST_VY_RANGE[1]),
+            # 用于碰撞判定的几何量
+            "player_w": float(self.PLAYER_W),
+            "player_h": float(self.PLAYER_H),
+            "player_y": float(self.PLAYER_Y),
+            "obst_w": float(self.OBST_W),
+            "obst_h": float(self.OBST_H),
+            "width": float(self.WIDTH),
+            "height": float(self.HEIGHT),
+            "empty": float(self.EMPTY),
         }
 
     # ================= 得分 =================
