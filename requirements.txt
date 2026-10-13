@@ -1,0 +1,48 @@
+# ======================================================================
+# 依赖安装
+# ======================================================================
+#
+# 本项目用 pyproject.toml 的 extras 定义三组依赖：
+#
+#   pip install -e .[1]       最基本的人类游玩      （7 个包，约 50MB）
+#   pip install -e .[2]       agent 游玩（已有权重） （35 个包，含 CUDA，约 2GB+）
+#   pip install -e .[3]       训练                   （44 个包）
+#   pip install -e .[1,2,3]   显式写全部
+#   pip install -e .[all]     全部（等价于上一行）
+#   pip install -e .          只装组 1（最小可玩）
+#
+# ----------------------------------------------------------------------
+# 为什么不能写 `pip install -r requirements.txt[1,2,3]`
+# ----------------------------------------------------------------------
+# pip 的 extras 语法 `pkg[extra]` 只能用在**包名**上，不能用在
+# `-r <文件>` 上。`requirements.txt[1]` 会被 pip 当成一个文件名去
+# 查找，直接报错：
+#
+#     ERROR: Could not open requirements file:
+#     [Errno 2] No such file or directory: 'requirements.txt[1]'
+#
+# 所以分组安装必须走 pyproject.toml 的 extras。
+#
+# ----------------------------------------------------------------------
+# 本文件的作用
+# ----------------------------------------------------------------------
+# 给「不想用 editable 安装、只想装依赖」的场景兜底。
+# 注意：它装的是**默认集**（组 1），不是全部 —— 因为 requirements.txt
+# 没有 extras 机制，装全部会让「只想玩游戏」的人也被迫下载 2GB 的 CUDA。
+#
+# 想要别的组，用对应命令：
+#     组 2：pip install -r requirements.txt stable-baselines3
+#     组 3：pip install -r requirements.txt stable-baselines3 tensorboard
+#   或直接用 extras（推荐）：pip install -e .[3]
+# ======================================================================
+
+# ---- 组 1：人类游玩（最小可玩集）----
+# 能做什么：自己玩游戏、跑游戏/环境接口、用专家策略
+#           （专家是纯 obs→action，不需要 torch）
+numpy>=1.24
+gymnasium>=0.29
+pygame-ce>=2.5
+
+# ---- 组 2 / 组 3 的额外依赖见文件头部说明 ----
+# stable-baselines3>=2.3   （组 2：加载已有权重）
+# tensorboard>=2.14        （组 3：训练与曲线）

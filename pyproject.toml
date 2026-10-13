@@ -1,0 +1,132 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# ======================================================================
+# 项目元信息
+# ======================================================================
+[project]
+name = "rl-game-framework"
+version = "0.2.0"
+description = "游戏与强化学习完全解耦的小框架（可插拔游戏 + 统一环境接口）"
+readme = "README.md"
+requires-python = ">=3.9"
+
+# ----------------------------------------------------------------------
+# 默认依赖 = 组 1（最基本的人类游玩）
+#
+# 为什么不把「全部」放在这里：pip 安装 `.[N]` 时，装的是
+# **dependencies + extra N** 的并集。如果把全部依赖写进
+# dependencies，那么 `pip install -e .[1]` 也会装 torch —— extras
+# 就完全失去意义了（这是实测发现的问题）。
+#
+# 所以：
+#     dependencies      只放组 1（人人都需要的最小集）
+#     [1] / [2] / [3]   在它之上逐级追加
+#
+# 想让「不写 extras 就装全部」，用别名：
+#     pip install -e .[all]      = 全部
+#     pip install -e .           = 组 1（最小可玩）
+# ----------------------------------------------------------------------
+dependencies = [
+    "numpy>=1.24",
+    "gymnasium>=0.29",
+    "pygame-ce>=2.5",
+]
+
+# ======================================================================
+# 分组安装（extras）
+#
+# 重要：pip 装 `.[N]` 时实际安装的是 **dependencies ∪ extra N**。
+# 因为 dependencies 已经包含组 1 的三个包，所以下面的 extras
+# 只需要写**增量**部分即可。这样：
+#
+#     pip install -e .          组 1  numpy + gymnasium + pygame-ce
+#     pip install -e .[1]       组 1  同上（显式写法）
+#     pip install -e .[2]       组 2  = 组 1 + stable-baselines3
+#     pip install -e .[3]       组 3  = 组 2 + tensorboard
+#     pip install -e .[all]     全部
+#     pip install -e .[1,2,3]   等价于 .[all]（并集去重）
+#
+# Python 的 extras **不支持嵌套引用**（不能写 "3": [".[2]"]），
+# 所以组 3 里必须重复列出 stable-baselines3。
+# ======================================================================
+[project.optional-dependencies]
+
+# ---- 1. 最基本的人类游玩 -------------------------------------------------
+# 显式写出三个包（而不是留空），这样 [1] 自身就是自洽、
+# 可读的 —— 即使将来 dependencies 变了，[1] 的含义也不变。
+# 能做什么：自己玩游戏、跑游戏/环境接口、用专家策略（专家是纯 obs→action）
+# 不能做：加载权重（需要 stable-baselines3）
+"1" = [
+    "numpy>=1.24",
+    "gymnasium>=0.29",
+    "pygame-ce>=2.5",
+]
+
+# ---- 2. agent 游玩（已有权重）-------------------------------------------
+# 在 1 的基础上加：play.py / compare.py 加载已有 .zip 权重并观看
+# 注：stable-baselines3 会自动拉 torch，无需单独声明
+"2" = [
+    "numpy>=1.24",
+    "gymnasium>=0.29",
+    "pygame-ce>=2.5",
+    "stable-baselines3>=2.3",
+]
+
+# ---- 3. 训练 -------------------------------------------------------------
+# 在 2 的基础上加：tensorboard（训练曲线、EvalCallback 日志、对比实验）
+"3" = [
+    "numpy>=1.24",
+    "gymnasium>=0.29",
+    "pygame-ce>=2.5",
+    "stable-baselines3>=2.3",
+    "tensorboard>=2.14",
+]
+
+# ---- 语义化别名（等价于 1 / 2 / 3 / 全部，给不习惯用数字的人用）----
+play = [
+    "numpy>=1.24",
+    "gymnasium>=0.29",
+    "pygame-ce>=2.5",
+]
+agent = [
+    "numpy>=1.24",
+    "gymnasium>=0.29",
+    "pygame-ce>=2.5",
+    "stable-baselines3>=2.3",
+]
+train = [
+    "numpy>=1.24",
+    "gymnasium>=0.29",
+    "pygame-ce>=2.5",
+    "stable-baselines3>=2.3",
+    "tensorboard>=2.14",
+]
+all = [
+    "numpy>=1.24",
+    "gymnasium>=0.29",
+    "pygame-ce>=2.5",
+    "stable-baselines3>=2.3",
+    "tensorboard>=2.14",
+]
+
+# ======================================================================
+# 打包配置
+#
+# 本项目的模块（games / envs / experts / common）是散落在仓库根的
+# **顶层包**，不是 src 布局。所以用 packages.find 显式指定，
+# 并排除测试与工具，避免把它们装进 site-packages。
+# ======================================================================
+[tool.setuptools]
+py-modules = ["train", "play", "human_play", "compare", "compare_child"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["games*", "envs*", "experts*", "common*"]
+exclude = ["tests*", "tools*", "config*", "models*", "logs*"]
+
+# 开发用（可选）：pytest 不属于 1/2/3 任何一组，因为框架自带的
+# tests/run_all.py 不依赖 pytest 就能跑。
+[tool.setuptools.package-data]
+"*" = ["*.json"]

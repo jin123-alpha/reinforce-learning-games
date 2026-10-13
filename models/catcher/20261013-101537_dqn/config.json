@@ -1,0 +1,18 @@
+{
+  "game": "catcher",
+  "run_id": "20261013-101537_dqn",
+  "algo": "dqn",
+  "config_source": "(迁移自旧结构，无原始算法配置)",
+  "game_kwargs": {
+    "num_balls": 3,
+    "paddle_speed": 5.0,
+    "max_misses": 10,
+    "max_steps": 1000,
+    "rich_obs": true
+  },
+  "train": {
+    "timesteps": null,
+    "note": "旧结构未记录步数"
+  },
+  "algo_kwargs": {}
+}

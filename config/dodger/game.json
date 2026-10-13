@@ -1,0 +1,5 @@
+{
+  "game_kwargs": {
+    "max_steps": 1000
+  }
+}

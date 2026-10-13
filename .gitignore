@@ -1,0 +1,29 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# ---- 训练产物（体积大、可再生成）----
+# 权重的 .zip 与 TensorBoard 事件流不该进版本库
+*.zip
+logs/**/tb/
+logs/**/*.tfevents.*
+
+# 但保留评估曲线和文本日志（小，便于复盘实验）
+!logs/**/evaluations.npz
+!logs/**/train.log
+!models/**/config.json
+!models/**/latest.txt
+!models/**/eval_summary.csv
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
