@@ -1,0 +1,10 @@
+{
+  "game_kwargs": {
+    "grid_w": 16,
+    "grid_h": 16,
+    "initial_len": 3,
+    "max_steps": 1000,
+    "max_steps_without_food": 120,
+    "relative_actions": true
+  }
+}
